@@ -12,7 +12,6 @@ WORKDIR /app
 COPY cli.lua ./
 COPY src/ ./src/
 COPY presets/ ./presets/
-COPY config/ ./config/
 
 # Copy Python bot
 COPY bot/requirements.txt ./
