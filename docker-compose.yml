@@ -1,0 +1,28 @@
+version: "3.9"
+
+services:
+  luaobf-bot:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: luaobf-bot
+    restart: unless-stopped
+    environment:
+      - DISCORD_TOKEN=${DISCORD_TOKEN}
+      - LUA_BIN=lua5.4
+      - CLI_PATH=/app/cli.lua
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - MAX_FILE_SIZE=${MAX_FILE_SIZE:-524288}
+      - TIMEOUT=${TIMEOUT:-60}
+      - QUEUE_MAX=${QUEUE_MAX:-10}
+      - PREFIX=${PREFIX:-!}
+      - ALLOWED_GUILDS=${ALLOWED_GUILDS:-}
+    volumes:
+      - ./logs:/app/logs
+    mem_limit: 256m
+    cpus: "0.5"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
