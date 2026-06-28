@@ -1,8 +1,4 @@
-"""
-bot.py: Discord bot frontend for LuaObf
-Handles commands, file uploads, and spawns the Lua obfuscator as a subprocess.
-Never implements any obfuscation logic itself.
-"""
+""" bot.py: Discord bot frontend for LuaObf Handles commands, file uploads, and spawns the Lua obfuscator as a subprocess. Never implements any obfuscation logic itself. """
 import asyncio
 import io
 import json
@@ -13,24 +9,27 @@ import tempfile
 import time
 from pathlib import Path
 from typing import Optional
-
 import discord
 from discord import app_commands
 from discord.ext import commands
 
-# ── Configuration ─────────────────────────────────────────────────────────
-DISCORD_TOKEN     = os.environ.get("DISCORD_TOKEN", "")
-LUA_EXECUTABLE    = os.environ.get("LUA_BIN", "lua")
-CLI_PATH          = os.environ.get("CLI_PATH", "./cli.lua")
-MAX_FILE_SIZE     = int(os.environ.get("MAX_FILE_SIZE", str(512 * 1024)))  # 512 KB
-MAX_OUTPUT_SIZE   = int(os.environ.get("MAX_OUTPUT_SIZE", str(8 * 1024 * 1024)))  # 8 MB
-MAX_TIMEOUT       = int(os.environ.get("TIMEOUT", "60"))
-LOG_LEVEL         = os.environ.get("LOG_LEVEL", "INFO")
-ALLOWED_GUILD_IDS = [int(x) for x in os.environ.get("ALLOWED_GUILDS", "").split(",") if x.strip()]
-QUEUE_MAX         = int(os.environ.get("QUEUE_MAX", "10"))
-PREFIX            = os.environ.get("PREFIX", "!")
+# Keep-alive web server
+from flask import Flask
+from threading import Thread
 
-# ── Logging ───────────────────────────────────────────────────────────────
+# Configuration
+DISCORD_TOKEN = os.environ.get("DISCORD_TOKEN", "")
+LUA_EXECUTABLE = os.environ.get("LUA_BIN", "lua")
+CLI_PATH = os.environ.get("CLI_PATH", "./cli.lua")
+MAX_FILE_SIZE = int(os.environ.get("MAX_FILE_SIZE", str(512 * 1024))) # 512 KB
+MAX_OUTPUT_SIZE = int(os.environ.get("MAX_OUTPUT_SIZE", str(8 * 1024 * 1024))) # 8 MB
+MAX_TIMEOUT = int(os.environ.get("TIMEOUT", "60"))
+LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO")
+ALLOWED_GUILD_IDS = [int(x) for x in os.environ.get("ALLOWED_GUILDS", "").split(",") if x.strip()]
+QUEUE_MAX = int(os.environ.get("QUEUE_MAX", "10"))
+PREFIX = os.environ.get("PREFIX", "!")
+
+# Logging
 logging.basicConfig(
     level=getattr(logging, LOG_LEVEL.upper(), logging.INFO),
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -38,12 +37,11 @@ logging.basicConfig(
 )
 log = logging.getLogger("luaobf-bot")
 
-# ── Allowed file extensions ───────────────────────────────────────────────
+# Allowed file extensions
 ALLOWED_EXT = {".lua", ".luau", ".txt"}
 VALID_PRESETS = {"light", "balanced", "heavy", "maximum"}
 
-
-# ── Job queue ─────────────────────────────────────────────────────────────
+# Job queue
 class JobQueue:
     def __init__(self, max_size: int):
         self._sem = asyncio.Semaphore(max_size)
@@ -70,17 +68,25 @@ class JobQueue:
             else:
                 self.failed += 1
 
-
-# ── Bot setup ─────────────────────────────────────────────────────────────
+# Bot setup
 intents = discord.Intents.default()
 intents.message_content = True
-
 bot = commands.Bot(command_prefix=PREFIX, intents=intents, help_command=None)
 queue = JobQueue(QUEUE_MAX)
 start_time = time.time()
 
+# Keep-alive server
+app = Flask(__name__)
 
-# ── Helpers ───────────────────────────────────────────────────────────────
+@app.route('/')
+def home():
+    return "LuaObf Discord Bot is running!"
+
+def run_flask():
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host="0.0.0.0", port=port, debug=False)
+
+# Helpers
 def validate_attachment(attachment: discord.Attachment) -> Optional[str]:
     """Return error string or None if valid."""
     ext = Path(attachment.filename).suffix.lower()
@@ -90,11 +96,9 @@ def validate_attachment(attachment: discord.Attachment) -> Optional[str]:
         return f"❌ File too large ({attachment.size:,} bytes). Max: {MAX_FILE_SIZE:,} bytes."
     return None
 
-
 def build_cli_args(preset: str, seed: Optional[int], options: dict) -> list:
     """Build CLI argument list from options."""
     args = [LUA_EXECUTABLE, CLI_PATH]
-
     if preset:
         args += ["--preset", preset]
     if seed is not None:
@@ -121,10 +125,8 @@ def build_cli_args(preset: str, seed: Optional[int], options: dict) -> list:
         args += ["--junk-density", str(options["junk_density"])]
     if options.get("preserve"):
         args += ["--preserve", options["preserve"]]
-
     args.append("--stats")
     return args
-
 
 async def run_obfuscator(
     source_bytes: bytes,
@@ -133,23 +135,15 @@ async def run_obfuscator(
     seed: Optional[int],
     options: dict,
 ) -> tuple[Optional[bytes], Optional[str], Optional[dict]]:
-    """
-    Run the Lua obfuscator subprocess.
-    Returns (output_bytes, error_str, stats_dict).
-    """
+    """ Run the Lua obfuscator subprocess. Returns (output_bytes, error_str, stats_dict). """
     suffix = Path(filename).suffix or ".lua"
-
     with tempfile.TemporaryDirectory(prefix="luaobf_") as tmpdir:
-        input_path  = Path(tmpdir) / f"input{suffix}"
+        input_path = Path(tmpdir) / f"input{suffix}"
         output_path = Path(tmpdir) / f"output{suffix}"
-
         input_path.write_bytes(source_bytes)
-
         args = build_cli_args(preset, seed, options)
         args += ["--output", str(output_path), str(input_path)]
-
         log.info("Running: %s", " ".join(str(a) for a in args))
-
         try:
             proc = await asyncio.create_subprocess_exec(
                 *args,
@@ -158,7 +152,8 @@ async def run_obfuscator(
                 cwd=Path(CLI_PATH).parent.resolve(),
             )
             stdout, stderr = await asyncio.wait_for(
-                proc.communicate(), timeout=MAX_TIMEOUT
+                proc.communicate(),
+                timeout=MAX_TIMEOUT
             )
         except asyncio.TimeoutError:
             try:
@@ -173,22 +168,17 @@ async def run_obfuscator(
 
         stderr_text = stderr.decode("utf-8", errors="replace")
         log.debug("STDERR: %s", stderr_text)
-
         if proc.returncode != 0:
             short = stderr_text[-800:] if len(stderr_text) > 800 else stderr_text
             return None, f"❌ Obfuscator failed (exit {proc.returncode}):\n```\n{short}\n```", None
-
         if not output_path.exists():
             return None, "❌ Obfuscator produced no output file.", None
-
         output_bytes = output_path.read_bytes()
         if len(output_bytes) > MAX_OUTPUT_SIZE:
             return None, f"❌ Output too large ({len(output_bytes):,} bytes).", None
-
         # Parse stats from stderr
         stats = parse_stats(stderr_text, source_bytes, output_bytes)
         return output_bytes, None, stats
-
 
 def parse_stats(stderr: str, input_bytes: bytes, output_bytes: bytes) -> dict:
     """Extract stats from CLI stderr output."""
@@ -203,12 +193,11 @@ def parse_stats(stderr: str, input_bytes: bytes, output_bytes: bytes) -> dict:
         if "Done in" in line:
             t = line.split("Done in")[-1].split("s")[0].strip()
             stats["time"] = t + "s"
-        if "✓" in line or "[+]" in line:
-            feat = line.strip().lstrip("✓ ").lstrip("[+] ")
+        if "✅" in line or "[+]" in line:
+            feat = line.strip().lstrip("✅ ").lstrip("[+] ")
             if feat:
                 stats["features"].append(feat)
     return stats
-
 
 def make_stats_embed(filename: str, stats: dict, seed: Optional[int], preset: str) -> discord.Embed:
     """Build a rich embed for the stats display."""
@@ -235,34 +224,25 @@ def make_stats_embed(filename: str, stats: dict, seed: Optional[int], preset: st
     embed.set_footer(text="LuaObf • Lua/Luau Source Obfuscator")
     return embed
 
-
-# ── Prefix commands ───────────────────────────────────────────────────────
+# Prefix commands
 @bot.command(name="obfuscate", aliases=["obf", "o"])
 async def obfuscate_prefix(ctx: commands.Context, preset: str = "balanced", seed: Optional[int] = None):
-    """
-    Obfuscate a Lua file.
-    Usage: !obfuscate [preset] [seed]
-    Attach a .lua / .luau / .txt file.
-    """
+    """ Obfuscate a Lua file. Usage: !obfuscate [preset] [seed] Attach a .lua / .luau / .txt file. """
     if not ctx.message.attachments:
         await ctx.send("❌ Please attach a `.lua`, `.luau`, or `.txt` file.")
         return
-
     attachment = ctx.message.attachments[0]
     err = validate_attachment(attachment)
     if err:
         await ctx.send(err)
         return
-
     preset = preset.lower()
     if preset not in VALID_PRESETS:
         await ctx.send(f"❌ Invalid preset `{preset}`. Choose: {', '.join(sorted(VALID_PRESETS))}")
         return
-
     if not await queue.acquire():
         await ctx.send("⏳ Server is busy. Please try again in a moment.")
         return
-
     async with ctx.typing():
         try:
             source = await attachment.read()
@@ -270,22 +250,18 @@ async def obfuscate_prefix(ctx: commands.Context, preset: str = "balanced", seed
                 source, attachment.filename, preset, seed, {}
             )
             await queue.record(output is not None)
-
             if error:
                 await ctx.send(error)
                 return
-
             out_filename = Path(attachment.filename).stem + ".obf" + Path(attachment.filename).suffix
             file = discord.File(io.BytesIO(output), filename=out_filename)
             embed = make_stats_embed(attachment.filename, stats, seed, preset)
             await ctx.send(file=file, embed=embed)
-
         except Exception as exc:
             log.exception("Unhandled error in !obfuscate")
             await ctx.send(f"❌ Internal error: {exc}")
         finally:
             queue.release()
-
 
 @bot.command(name="help", aliases=["h"])
 async def help_cmd(ctx: commands.Context):
@@ -318,36 +294,33 @@ async def help_cmd(ctx: commands.Context):
     embed.set_footer(text="LuaObf • Lua/Luau Source Obfuscator")
     await ctx.send(embed=embed)
 
-
 @bot.command(name="stats")
 async def stats_cmd(ctx: commands.Context):
     uptime = time.time() - start_time
     hours, rem = divmod(int(uptime), 3600)
     mins, secs = divmod(rem, 60)
     embed = discord.Embed(title="📊 Bot Statistics", color=0x5865F2)
-    embed.add_field(name="Uptime",    value=f"`{hours:02d}h {mins:02d}m {secs:02d}s`", inline=True)
-    embed.add_field(name="Jobs Run",  value=f"`{queue.total}`", inline=True)
+    embed.add_field(name="Uptime", value=f"`{hours:02d}h {mins:02d}m {secs:02d}s`", inline=True)
+    embed.add_field(name="Jobs Run", value=f"`{queue.total}`", inline=True)
     embed.add_field(name="Succeeded", value=f"`{queue.succeeded}`", inline=True)
-    embed.add_field(name="Failed",    value=f"`{queue.failed}`", inline=True)
-    embed.add_field(name="Lua Bin",   value=f"`{LUA_EXECUTABLE}`", inline=True)
+    embed.add_field(name="Failed", value=f"`{queue.failed}`", inline=True)
+    embed.add_field(name="Lua Bin", value=f"`{LUA_EXECUTABLE}`", inline=True)
     await ctx.send(embed=embed)
-
 
 @bot.command(name="presets")
 async def presets_cmd(ctx: commands.Context):
     embed = discord.Embed(title="📋 Available Presets", color=0x5865F2)
     descriptions = {
-        "light":    "Identifier renaming only. Fast, minimal size increase.",
+        "light": "Identifier renaming only. Fast, minimal size increase.",
         "balanced": "Rename + string encryption + number MBA. Good default.",
-        "heavy":    "All of balanced + control flow flattening + proxy globals + 2 wrap layers.",
-        "maximum":  "Everything enabled. Densest junk, 3 IIFE layers. Largest output.",
+        "heavy": "All of balanced + control flow flattening + proxy globals + 2 wrap layers.",
+        "maximum": "Everything enabled. Densest junk, 3 IIFE layers. Largest output.",
     }
     for name, desc in descriptions.items():
         embed.add_field(name=f"`{name}`", value=desc, inline=False)
     await ctx.send(embed=embed)
 
-
-# ── Slash commands ────────────────────────────────────────────────────────
+# Slash commands
 @bot.tree.command(name="obfuscate", description="Obfuscate a Lua/Luau source file")
 @app_commands.describe(
     file="The .lua / .luau / .txt file to obfuscate",
@@ -365,10 +338,10 @@ async def presets_cmd(ctx: commands.Context):
     no_proxy="Disable global proxy table",
 )
 @app_commands.choices(preset=[
-    app_commands.Choice(name="light",    value="light"),
+    app_commands.Choice(name="light", value="light"),
     app_commands.Choice(name="balanced", value="balanced"),
-    app_commands.Choice(name="heavy",    value="heavy"),
-    app_commands.Choice(name="maximum",  value="maximum"),
+    app_commands.Choice(name="heavy", value="heavy"),
+    app_commands.Choice(name="maximum", value="maximum"),
 ])
 async def obfuscate_slash(
     interaction: discord.Interaction,
@@ -390,28 +363,24 @@ async def obfuscate_slash(
     if err:
         await interaction.response.send_message(err, ephemeral=True)
         return
-
     chosen_preset = preset.value if preset else "balanced"
-
     if not await queue.acquire():
         await interaction.response.send_message(
             "⏳ Server is busy. Please try again shortly.", ephemeral=True
         )
         return
-
     await interaction.response.defer(thinking=True)
-
     try:
         source = await file.read()
         options = {
-            "no_rename":   no_rename,
-            "no_strings":  no_strings,
-            "no_numbers":  no_numbers,
-            "no_junk":     no_junk,
-            "no_flow":     no_flow,
-            "no_proxy":    no_proxy,
-            "minify":      minify,
-            "watermark":   watermark,
+            "no_rename": no_rename,
+            "no_strings": no_strings,
+            "no_numbers": no_numbers,
+            "no_junk": no_junk,
+            "no_flow": no_flow,
+            "no_proxy": no_proxy,
+            "minify": minify,
+            "watermark": watermark,
             "wrap_layers": wrap_layers,
             "junk_density": junk_density,
         }
@@ -419,22 +388,18 @@ async def obfuscate_slash(
             source, file.filename, chosen_preset, seed, options
         )
         await queue.record(output is not None)
-
         if error:
             await interaction.followup.send(error)
             return
-
         out_filename = Path(file.filename).stem + ".obf" + Path(file.filename).suffix
         disc_file = discord.File(io.BytesIO(output), filename=out_filename)
         embed = make_stats_embed(file.filename, stats, seed, chosen_preset)
         await interaction.followup.send(file=disc_file, embed=embed)
-
     except Exception as exc:
         log.exception("Unhandled error in /obfuscate")
         await interaction.followup.send(f"❌ Internal error: {exc}")
     finally:
         queue.release()
-
 
 @bot.tree.command(name="help", description="Show LuaObf help")
 async def help_slash(interaction: discord.Interaction):
@@ -454,8 +419,7 @@ async def help_slash(interaction: discord.Interaction):
     )
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
-
-# ── Events ─────────────────────────────────────────────────────────────────
+# Events
 @bot.event
 async def on_ready():
     log.info("Logged in as %s (ID: %s)", bot.user, bot.user.id)
@@ -478,7 +442,6 @@ async def on_ready():
         )
     )
 
-
 @bot.event
 async def on_command_error(ctx: commands.Context, error: commands.CommandError):
     if isinstance(error, commands.CommandNotFound):
@@ -489,10 +452,13 @@ async def on_command_error(ctx: commands.Context, error: commands.CommandError):
     log.error("Command error in %s: %s", ctx.command, error)
     await ctx.send(f"❌ Error: {error}")
 
-
-# ── Entry ──────────────────────────────────────────────────────────────────
+# Entry
 if __name__ == "__main__":
     if not DISCORD_TOKEN:
         log.error("DISCORD_TOKEN environment variable is not set!")
         raise SystemExit(1)
+
+    # Start keep-alive server in background thread
+    Thread(target=run_flask, daemon=True).start()
+
     bot.run(DISCORD_TOKEN, log_handler=None)
